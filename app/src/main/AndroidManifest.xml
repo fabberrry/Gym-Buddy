@@ -18,8 +18,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PoseBenchmark">
 
+        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".WorkoutSetupActivity" android:exported="false" />
+        <activity android:name=".WorkoutResultsActivity" android:exported="false" />
         <activity
-            android:name=".MainActivity"
+            android:name=".HomeActivity"
             android:exported="true">
 
             <intent-filter>
