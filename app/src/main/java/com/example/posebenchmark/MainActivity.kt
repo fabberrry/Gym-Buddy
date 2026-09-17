@@ -1,6 +1,7 @@
 package com.example.posebenchmark
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -9,6 +10,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
@@ -84,6 +86,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var squatButton: Button
 
     private lateinit var pushUpButton: Button
+    private lateinit var nextSetButton: Button
+    private var workoutSession: WorkoutSessionManager? = null
+    private var workoutResultsOpened = false
 
 
     // =========================================================
@@ -132,6 +137,9 @@ class MainActivity : ComponentActivity() {
 
 
     companion object {
+        const val EXTRA_WORKOUT_EXERCISE = "workout_exercise"
+        const val EXTRA_WORKOUT_SETS = "workout_sets"
+        const val EXTRA_WORKOUT_REPS = "workout_reps"
 
         private const val TAG =
             "PoseBenchmark"
@@ -177,6 +185,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(
             savedInstanceState
         )
+
+        val requestedExercise = intent.getStringExtra(EXTRA_WORKOUT_EXERCISE)
+        if (requestedExercise == ExerciseType.SQUAT.name) {
+            val sets = intent.getIntExtra(EXTRA_WORKOUT_SETS, 3).coerceIn(1, 20)
+            val reps = intent.getIntExtra(EXTRA_WORKOUT_REPS, 10).coerceIn(1, 100)
+            workoutSession = WorkoutSessionManager(WorkoutExercise(ExerciseType.SQUAT, sets, reps))
+            workoutSession!!.start(SystemClock.uptimeMillis())
+        }
 
 
         // =====================================================
@@ -395,6 +411,8 @@ class MainActivity : ComponentActivity() {
             selectorParams
         )
 
+        if (workoutSession != null) selectorLayout.visibility = View.GONE
+
 
         // =====================================================
         // EXERCISE INFORMATION UI
@@ -468,6 +486,29 @@ class MainActivity : ComponentActivity() {
             exerciseText,
             exerciseParams
         )
+
+        nextSetButton = Button(this).apply {
+            text = "START NEXT SET"
+            isAllCaps = false
+            visibility = View.GONE
+            setOnClickListener {
+                synchronized(exerciseLock) {
+                    if (workoutSession?.state == WorkoutSessionState.SET_COMPLETE) {
+                        squatExercise.resetSession()
+                        workoutSession!!.startNextSet(SystemClock.uptimeMillis())
+                    }
+                }
+                visibility = View.GONE
+            }
+        }
+        root.addView(nextSetButton, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM
+            leftMargin = 20
+            rightMargin = 20
+            bottomMargin = (180 * resources.displayMetrics.density).toInt()
+        })
 
 
         setContentView(
@@ -1047,7 +1088,18 @@ class MainActivity : ComponentActivity() {
                 activeSession = exerciseSession
                 guidance = when (activeExercise) {
                     ExerciseMode.SQUAT -> {
-                        squatResult = squatExercise.analyze(landmarks)
+                        squatResult = squatExercise.analyze(
+                            landmarks, frameWidth, frameHeight, result.timestampMs()
+                        )
+                        workoutSession?.let { session ->
+                            val measurement = squatResult!!
+                            session.recordSample(result.timestampMs(),
+                                (measurement.standingBaseline ?: measurement.smoothedHipSignal) -
+                                    measurement.smoothedHipSignal)
+                            measurement.completedRep?.let {
+                                session.completedRep(result.timestampMs(), it)
+                            }
+                        }
                         PostureGuidance()
                     }
                     ExerciseMode.PUSH_UP -> {
@@ -1070,7 +1122,7 @@ class MainActivity : ComponentActivity() {
                 activeExercise = selectedExercise
                 activeSession = exerciseSession
                 when (activeExercise) {
-                    ExerciseMode.SQUAT -> squatExercise.onPoseLost()
+                    ExerciseMode.SQUAT -> squatExercise.onPoseLost(result.timestampMs())
                     ExerciseMode.PUSH_UP -> pushUpExercise.onPoseLost()
                 }
             }
@@ -1113,14 +1165,14 @@ class MainActivity : ComponentActivity() {
                             null
                         ) {
 
-                            "SQUAT\nNo pose detected"
+                            "SQUAT  |  Phase: NOT_READY\nNo pose detected"
 
 
                         } else if (
                             !squatResult!!.bodyVisible
                         ) {
 
-                            "SQUAT\n" +
+                            "SQUAT  |  Phase: NOT_READY\n" +
                                     squatResult!!.feedback
 
 
@@ -1130,18 +1182,21 @@ class MainActivity : ComponentActivity() {
                                 Locale.US,
 
                                 "SQUAT  |  Reps: %d\n" +
-                                        "Phase: %s\n" +
-                                        "Knee: %.0f°\n" +
-                                        "Torso: %.0f°\n" +
+                                        "Phase: %s  |  Side: %s\n" +
+                                        "Hip: %.2f (raw %.2f)  |  Flex: %.0f°\n" +
+                                        "Velocity: %.2f/s  |  Baseline: %.2f\n" +
                                         "%s",
 
                                 squatResult!!.repCount,
 
                                 squatResult!!.phase.name,
 
-                                squatResult!!.averageKneeAngle,
-
-                                squatResult!!.torsoLeanAngle,
+                                squatResult!!.selectedSide,
+                                squatResult!!.smoothedHipSignal,
+                                squatResult!!.rawHipSignal,
+                                squatResult!!.kneeFlexion,
+                                squatResult!!.movementVelocity,
+                                squatResult!!.standingBaseline ?: Double.NaN,
 
                                 squatResult!!.feedback
                             )
@@ -1154,7 +1209,7 @@ class MainActivity : ComponentActivity() {
                             squatResult !=
                             null &&
                             squatResult!!.bodyVisible &&
-                            squatResult!!.postureGood
+                            squatResult!!.phase != SquatExercisePhase.NOT_READY
                         ) {
 
                             Color.rgb(
@@ -1251,8 +1306,36 @@ class MainActivity : ComponentActivity() {
                     exerciseSession == activeSession
                 ) {
 
-                    exerciseText.text =
-                        exerciseDisplay
+                    val session = workoutSession
+                    if (session == null) {
+                        exerciseText.text = exerciseDisplay
+                    } else {
+                        synchronized(exerciseLock) {
+                            exerciseText.text = when (session.state) {
+                                WorkoutSessionState.ACTIVE_SET -> {
+                                    val targetReps = intent.getIntExtra(EXTRA_WORKOUT_REPS, 10)
+                                    val filled = (session.currentRep * 10 / targetReps).coerceIn(0, 10)
+                                    "SQUAT\nSet ${session.currentSet} / ${intent.getIntExtra(EXTRA_WORKOUT_SETS, 3)}" +
+                                    "    Rep ${session.currentRep} / $targetReps\n" +
+                                    "Phase: ${squatResult?.phase ?: SquatExercisePhase.NOT_READY}\n" +
+                                    "${"█".repeat(filled)}${"░".repeat(10 - filled)}"
+                                }
+                                WorkoutSessionState.SET_COMPLETE ->
+                                    "SET ${session.currentSet} COMPLETE\n" +
+                                    "Tap START NEXT SET when ready"
+                                WorkoutSessionState.WORKOUT_COMPLETE -> "WORKOUT COMPLETE"
+                                WorkoutSessionState.NOT_STARTED -> "Preparing workout"
+                            }
+                            nextSetButton.visibility = if (session.state == WorkoutSessionState.SET_COMPLETE)
+                                View.VISIBLE else View.GONE
+                            if (session.state == WorkoutSessionState.WORKOUT_COMPLETE && !workoutResultsOpened) {
+                                workoutResultsOpened = true
+                                WorkoutResultStore.latest = session.result()
+                                startActivity(Intent(this, WorkoutResultsActivity::class.java))
+                                finish()
+                            }
+                        }
+                    }
 
 
                     exerciseText.setTextColor(
@@ -1362,8 +1445,13 @@ class MainActivity : ComponentActivity() {
                                     "Pose=$poseText " +
                                     "Reps=${squatResult!!.repCount} " +
                                     "Phase=${squatResult!!.phase} " +
-                                    "Knee=${"%.1f".format(squatResult!!.averageKneeAngle)} " +
-                                    "Torso=${"%.1f".format(squatResult!!.torsoLeanAngle)} " +
+                                    "Side=${squatResult!!.selectedSide} " +
+                                    "Valid=${squatResult!!.bodyVisible} " +
+                                    "HipRaw=${squatResult!!.rawHipSignal} " +
+                                    "HipSmooth=${squatResult!!.smoothedHipSignal} " +
+                                    "Flex=${squatResult!!.kneeFlexion} " +
+                                    "Velocity=${squatResult!!.movementVelocity} " +
+                                    "Baseline=${squatResult!!.standingBaseline} " +
                                     "Feedback=${squatResult!!.feedback}"
                         )
                     }
