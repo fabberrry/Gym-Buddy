@@ -23,6 +23,7 @@ This repository implements an interactive benchmark viewer. It does not yet prov
 - Displays result FPS, pose presence, landmark count, and callback latency approximately once per second.
 - Writes performance and error messages to Logcat under `PoseBenchmark`.
 - Loads the model from app assets; there is no runtime model download in the application code.
+- Shows the Fit-Ai-IoT absolute room occupancy on Home when its local gateway is available. See [local occupancy setup](docs/occupancy-integration.md).
 
 ## Build and run
 
@@ -188,6 +189,6 @@ The current tests only check arithmetic and the application package name. The ap
 - The frame-copy path does not explicitly account for RGBA row padding. Rotation, frame layout, and lifecycle behavior need device testing.
 - UI status strings are hardcoded in English and several dimensions use raw pixels; accessibility, localization, and system-inset behavior are not validated.
 
-The reviewed application code processes camera images in memory and does not implement image/video persistence, uploads, accounts, or analytics. The source manifest declares camera permission and no internet permission. Android backup is enabled with template rules; revisit these if persistent data is introduced. This source review is not a dependency-wide privacy audit.
+The reviewed application code processes camera images in memory and does not implement image/video persistence, uploads, or accounts. The source manifest declares camera and internet permissions; the Home screen uses internet permission to read the local occupancy gateway. Android backup is enabled with template rules; revisit these if persistent data is introduced. This source review is not a dependency-wide privacy audit.
 
 No project license or separate model provenance/license documentation is present. Establish the applicable code and model redistribution terms before distributing the project.

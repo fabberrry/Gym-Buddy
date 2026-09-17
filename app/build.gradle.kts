@@ -2,6 +2,13 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+val occupancyBaseUrl = providers.gradleProperty("gymOccupancyBaseUrl")
+    .orElse("http://10.0.2.2:8080/").get()
+val occupancyDeviceId = providers.gradleProperty("gymOccupancyDeviceId")
+    .orElse("counter-01").get()
+val occupancyRoomId = providers.gradleProperty("gymOccupancyRoomId")
+    .orElse("room-01").get()
+
 android {
     namespace = "com.example.posebenchmark"
     compileSdk {
@@ -16,7 +23,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "OCCUPANCY_BASE_URL", "\"$occupancyBaseUrl\"")
+        buildConfigField("String", "OCCUPANCY_DEVICE_ID", "\"$occupancyDeviceId\"")
+        buildConfigField("String", "OCCUPANCY_ROOM_ID", "\"$occupancyRoomId\"")
     }
+
+    buildFeatures { buildConfig = true }
 
     buildTypes {
         release {
@@ -33,6 +45,10 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     val cameraXVersion = "1.6.2"
 
     implementation("androidx.activity:activity-ktx:1.11.0")

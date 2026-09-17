@@ -2,6 +2,7 @@ package com.example.posebenchmark
 
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -9,6 +10,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 
 internal object WorkoutUi {
     const val BG = 0xff10151d.toInt()
@@ -36,11 +42,41 @@ internal object WorkoutUi {
 }
 
 class HomeActivity : ComponentActivity() {
+    private val occupancyViewModel: GymOccupancyViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = WorkoutUi.column(this)
         root.addView(WorkoutUi.text(this, "GYM BUDDY", 32f))
         root.addView(WorkoutUi.text(this, "Choose how you want to train today."))
+        val occupancyCard = WorkoutUi.text(this, "GYM RIGHT NOW\nChecking gym occupancy...", 20f)
+        occupancyCard.setPadding(24, 20, 24, 20)
+        occupancyCard.background = GradientDrawable().apply {
+            setColor(WorkoutUi.CARD)
+            cornerRadius = 18 * resources.displayMetrics.density
+        }
+        root.addView(occupancyCard)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                occupancyViewModel.state.collect { state ->
+                    occupancyCard.text = when (state) {
+                        GymOccupancyUiState.Loading -> "GYM RIGHT NOW\nChecking gym occupancy..."
+                        GymOccupancyUiState.Unavailable -> "GYM RIGHT NOW\nGym occupancy unavailable"
+                        is GymOccupancyUiState.Available -> buildString {
+                            append("GYM RIGHT NOW\n${state.room.count} people in gym")
+                            if (state.stale) {
+                                append("\nLast updated ${formatAge(state.ageSeconds)} ago")
+                                if (state.connectionUnavailable) append("\nConnection temporarily unavailable")
+                            } else append("\nUpdated just now")
+                            if (state.room.status == "uncertain")
+                                append("\nOccupancy estimate may be uncertain")
+                            if (state.sessionChanged)
+                                append("\nCounter restarted; verify baseline")
+                        }
+                    }
+                }
+            }
+        }
         root.addView(WorkoutUi.button(this, "Quick Analyze") {
             startActivity(Intent(this, MainActivity::class.java))
         })
@@ -48,6 +84,22 @@ class HomeActivity : ComponentActivity() {
             startActivity(Intent(this, WorkoutSetupActivity::class.java))
         })
         setContentView(root)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        occupancyViewModel.startPolling()
+    }
+
+    override fun onStop() {
+        occupancyViewModel.stopPolling()
+        super.onStop()
+    }
+
+    private fun formatAge(seconds: Long): String = when {
+        seconds < 60 -> "$seconds sec"
+        seconds < 3600 -> "${seconds / 60} min"
+        else -> "${seconds / 3600} hr"
     }
 }
 
