@@ -19,6 +19,14 @@ class GymOccupancyViewModel : ViewModel() {
     private val mutableState = MutableStateFlow<GymOccupancyUiState>(GymOccupancyUiState.Loading)
     val state: StateFlow<GymOccupancyUiState> = mutableState
     private var pollingJob: Job? = null
+    private var refreshJob: Job? = null
+
+    fun refreshNow() {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
+            mutableState.value = repository.refresh()
+        }
+    }
 
     fun startPolling() {
         if (pollingJob?.isActive == true) return

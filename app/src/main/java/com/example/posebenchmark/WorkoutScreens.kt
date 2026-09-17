@@ -56,6 +56,9 @@ class HomeActivity : ComponentActivity() {
             cornerRadius = 18 * resources.displayMetrics.density
         }
         root.addView(occupancyCard)
+        root.addView(WorkoutUi.button(this, "Refresh count") {
+            occupancyViewModel.refreshNow()
+        })
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 occupancyViewModel.state.collect { state ->

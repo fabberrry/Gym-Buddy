@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.max
+import android.util.Log
 
 interface OccupancyClock {
     fun elapsedMs(): Long
@@ -59,7 +60,8 @@ class GymOccupancyRepository(
             offline = false
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+             Log.e("GymOccupancy", "Failed to fetch gym occupancy", e)
             offline = true
         }
         current()
