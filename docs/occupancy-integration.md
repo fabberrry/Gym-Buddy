@@ -20,6 +20,70 @@ laptop firewall. If the gateway uses different identities, pass
 `-PgymOccupancyDeviceId=...` and `-PgymOccupancyRoomId=...` too. No token is
 required by the default gateway configuration. Do not put secrets in this repo.
 
+If the emulator cannot connect to `10.0.2.2` on this Windows machine, build the
+debug app with `-PgymOccupancyBaseUrl=http://127.0.0.1:8080/` and connect the
+emulator to the local gateway with:
+
+```powershell
+& 'G:\MobileSdk\platform-tools\adb.exe' reverse tcp:8080 tcp:8080
+```
+
+Repeat the reverse command after restarting the emulator.
+
+## Change the count without hardware
+
+For manual increments and decrements, start Gym-Buddy's local demo feed in a
+terminal from this repository:
+
+```powershell
+python scripts/demo_gym_iot.py --port 8081 --count 0
+```
+
+The debug app installed on the Pixel emulator uses `127.0.0.1:8080`; point its
+ADB tunnel at the demo feed in another terminal:
+
+```powershell
+& 'G:\MobileSdk\platform-tools\adb.exe' reverse --remove tcp:8080
+& 'G:\MobileSdk\platform-tools\adb.exe' reverse tcp:8080 tcp:8081
+```
+
+Run these commands to change the value while the server stays open:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8081/dev/increment
+curl.exe -X POST http://127.0.0.1:8081/dev/decrement
+curl.exe http://127.0.0.1:8081/v1/state
+```
+
+Each POST changes the absolute count by one and returns the resulting JSON.
+Decrementing at zero returns HTTP 409 and leaves zero displayed. Home picks up
+the change automatically within three seconds, or immediately when you tap
+**Refresh count**. The demo feed only listens on this computer's loopback
+address and does not use physical sensors. Press Ctrl+C to stop it.
+
+To reconnect the emulator to the Fit-Ai-IoT gateway on port 8080, run
+`& 'G:\MobileSdk\platform-tools\adb.exe' reverse --remove tcp:8080` followed
+by `& 'G:\MobileSdk\platform-tools\adb.exe' reverse tcp:8080 tcp:8080`.
+
+The Fit-Ai-IoT desktop gateway publishes simulated RoomState snapshots. From
+`F:\DEV\repo\Fit-Ai-IoT`, run:
+
+```powershell
+python desktop/people_counter_gateway.py --scenario slow-demo
+```
+
+With Home open, the count progresses through `0 → 1 → 2 → 3 → 2 → 3` over about
+30 seconds. The app polls every three seconds. Tap **Refresh count** on Home to
+request the current snapshot immediately.
+
+To show a fixed count of your choice, stop the gateway with Ctrl+C, set
+`initialCount` to that number and `scenario` to `empty` in
+`F:\DEV\repo\Fit-Ai-IoT\config\gateway.json`, then run
+`python desktop/people_counter_gateway.py` again. For example,
+`"initialCount": 5` and `"scenario": "empty"` will keep the displayed count at
+5. The app marks a new gateway session with “Counter restarted; verify
+baseline.” Restore `initialCount` to 0 and `scenario` to `demo` when finished.
+
 Only debug builds allow local cleartext HTTP. Release builds retain Android's
 normal secure networking defaults, so a release deployment needs HTTPS.
 
