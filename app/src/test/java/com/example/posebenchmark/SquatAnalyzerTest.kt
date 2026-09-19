@@ -80,4 +80,28 @@ class SquatAnalyzerTest {
         repeat(10) { time += 50; assertEquals(0,
             analyzer.analyze(pose(0f), 720, 1280, time).repCount) }
     }
+
+    @Test fun normalizedRepResultIsStableAcrossFrameRatesAndImageSizes() {
+        fun run(intervalMs: Long, width: Int, height: Int): SquatExerciseResult {
+            val analyzer = SquatAnalyzer()
+            var time = 0L
+            fun sample(depth: Float): SquatExerciseResult {
+                time += intervalMs
+                return analyzer.analyze(pose(depth), width, height, time)
+            }
+            repeat((600 / intervalMs).toInt().coerceAtLeast(8)) { sample(0f) }
+            val movementFrames = (1200 / intervalMs).toInt().coerceAtLeast(12)
+            for (i in 1..movementFrames) sample(i / movementFrames.toFloat())
+            repeat((250 / intervalMs).toInt().coerceAtLeast(3)) { sample(1f) }
+            for (i in movementFrames - 1 downTo 0) sample(i / movementFrames.toFloat())
+            var result = sample(0f)
+            repeat((300 / intervalMs).toInt().coerceAtLeast(3)) { result = sample(0f) }
+            return result
+        }
+
+        val fastSamples = run(33, 720, 1280)
+        val slowSamples = run(67, 1080, 1920)
+        assertEquals(1, fastSamples.repCount)
+        assertEquals(1, slowSamples.repCount)
+    }
 }

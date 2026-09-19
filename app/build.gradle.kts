@@ -30,6 +30,10 @@ android {
 
     buildFeatures { buildConfig = true }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildTypes {
         release {
             optimization {

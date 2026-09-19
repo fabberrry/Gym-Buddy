@@ -15,7 +15,13 @@ data class SquatExerciseResult(
     val movementVelocity: Double,
     val standingBaseline: Double?,
     val feedback: String,
-    val completedRep: SquatRepMetrics? = null
+    val completedRep: SquatRepMetrics? = null,
+    val normalizedDepth: Double = 0.0,
+    val torsoDeviationDeg: Double = Double.NaN,
+    val torsoInclinationDeg: Double = Double.NaN,
+    val shallowBottom: Boolean = false,
+    val legLengthPx: Double = Double.NaN,
+    val sampleTimestampMs: Long = 0L
 )
 
 /** Keeps the existing exercise entry point while movement analysis stays independent of UI. */

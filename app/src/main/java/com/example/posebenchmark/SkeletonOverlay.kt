@@ -3,7 +3,9 @@ package com.example.posebenchmark
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.view.View
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import kotlin.math.min
@@ -59,7 +61,10 @@ class SkeletonOverlay(context: Context) : View(context) {
     private val screenY = FloatArray(33)
 
     private val jointPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val jointOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+    private val jointOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        strokeWidth = 2f * density
+    }
     private fun strokePaint(widthDp: Float, paintColor: Int = Color.WHITE) =
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -69,6 +74,7 @@ class SkeletonOverlay(context: Context) : View(context) {
             color = paintColor
         }
     private val bonePaint = strokePaint(BONE_WIDTH)
+    private val wrongBonePattern = DashPathEffect(floatArrayOf(12f * density, 7f * density), 0f)
     private val boneOutlinePaint = strokePaint(BONE_WIDTH + 2 * BONE_OUTLINE_WIDTH, Color.BLACK)
     private val arrowPaint = strokePaint(ARROW_WIDTH)
     private val arrowOutlinePaint = strokePaint(ARROW_WIDTH + 2 * ARROW_OUTLINE_WIDTH, Color.BLACK)
@@ -164,6 +170,8 @@ class SkeletonOverlay(context: Context) : View(context) {
             val (start, end) = BONES[i]
             if (!renderable[start] || !renderable[end]) continue
             bonePaint.color = colorFor(boneStates[i])
+            bonePaint.pathEffect = if (boneStates[i] == PostureVisualState.WRONG)
+                wrongBonePattern else null
             canvas.drawLine(screenX[start], screenY[start], screenX[end], screenY[end], boneOutlinePaint)
             canvas.drawLine(screenX[start], screenY[start], screenX[end], screenY[end], bonePaint)
         }
@@ -176,6 +184,22 @@ class SkeletonOverlay(context: Context) : View(context) {
             canvas.drawCircle(screenX[index], screenY[index],
                 (JOINT_RADIUS + JOINT_OUTLINE_WIDTH) * density, jointOutlinePaint)
             canvas.drawCircle(screenX[index], screenY[index], JOINT_RADIUS * density, jointPaint)
+            if (jointStates[index] == PostureVisualState.WRONG) {
+                val r = JOINT_RADIUS * density * 0.58f
+                canvas.drawLine(screenX[index] - r, screenY[index] - r,
+                    screenX[index] + r, screenY[index] + r, jointOutlinePaint)
+                canvas.drawLine(screenX[index] - r, screenY[index] + r,
+                    screenX[index] + r, screenY[index] - r, jointOutlinePaint)
+            } else if (jointStates[index] == PostureVisualState.WARNING) {
+                val r = JOINT_RADIUS * density * 0.7f
+                val triangle = Path().apply {
+                    moveTo(screenX[index], screenY[index] - r)
+                    lineTo(screenX[index] + r, screenY[index] + r)
+                    lineTo(screenX[index] - r, screenY[index] + r)
+                    close()
+                }
+                canvas.drawPath(triangle, jointOutlinePaint)
+            }
         }
     }
 

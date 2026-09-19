@@ -5,6 +5,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkoutSessionManagerTest {
+    @Test fun pushUpSessionFinishesWithPushUpMetrics() {
+        val session = WorkoutSessionManager(WorkoutExercise(ExerciseType.PUSH_UP, 1, 2))
+        session.start(1_000)
+        session.completedRep(2_000, PushUpRepMetrics(1_200, 2_000, 95.0))
+        assertEquals(WorkoutSessionState.ACTIVE_SET, session.state)
+        session.completedRep(3_100, PushUpRepMetrics(2_300, 3_100, 100.0))
+        assertEquals(WorkoutSessionState.WORKOUT_COMPLETE, session.state)
+        assertEquals(2, session.result().totalReps)
+        assertEquals(95.0,
+            (session.result().setResults[0].repResults[0].metrics as PushUpRepMetrics)
+                .minimumElbowAngle, 0.001)
+    }
+
     @Test fun countsSetsAndKeepsRealRepMetrics() {
         val session = WorkoutSessionManager(WorkoutExercise(ExerciseType.SQUAT, 3, 2))
         session.start(1_000)

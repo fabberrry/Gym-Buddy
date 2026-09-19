@@ -121,7 +121,6 @@ class WorkoutSetupActivity : ComponentActivity() {
         root.addView(WorkoutUi.text(this, DefaultRoutines.today.name, 30f))
         root.addView(WorkoutUi.text(this, "Select an exercise"))
         for (exercise in DefaultRoutines.today.exercises) {
-            if (exercise.exerciseType != ExerciseType.SQUAT) continue
             root.addView(WorkoutUi.button(this,
                 "${exercise.exerciseType.label}  •  ${exercise.sets} sets × ${exercise.reps} reps") {
                 selected = exercise

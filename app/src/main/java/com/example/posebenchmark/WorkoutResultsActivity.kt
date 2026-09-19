@@ -77,6 +77,25 @@ class WorkoutResultsActivity : ComponentActivity() {
             root.addView(WorkoutUi.button(this, "DONE") { finish() })
             return
         }
+        if (result.exercise == ExerciseType.PUSH_UP) {
+            val reps = result.setResults.flatMap { it.repResults }
+            val metrics = reps.mapNotNull { it.metrics as? PushUpRepMetrics }
+            fun number(value: Double) = String.format(Locale.US, "%.1f", value)
+            root.addView(WorkoutUi.text(this, "PUSH-UP COMPLETE", 28f))
+            root.addView(WorkoutUi.text(this,
+                "${result.completedSets} sets    ${result.totalReps} reps\n" +
+                "Total time: ${number(result.durationSeconds)}s", 20f))
+            root.addView(WorkoutUi.text(this, "REP DURATION", 22f))
+            root.addView(WorkoutLineChart(this, metrics.mapIndexed { index, rep ->
+                ChartPoint("${index + 1}", rep.durationSeconds)
+            }, "s"))
+            root.addView(WorkoutUi.text(this, "MINIMUM ELBOW ANGLE", 22f))
+            root.addView(WorkoutLineChart(this, metrics.mapIndexed { index, rep ->
+                ChartPoint("${index + 1}", rep.minimumElbowAngle)
+            }, "°"))
+            root.addView(WorkoutUi.button(this, "DONE") { finish() })
+            return
+        }
         val reps = result.setResults.flatMap { it.repResults }
         val squats = reps.mapNotNull { it.metrics as? SquatRepMetrics }
         val durations = squats.map { it.durationSeconds }

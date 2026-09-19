@@ -7,6 +7,8 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -14,6 +16,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -24,9 +27,12 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
@@ -38,6 +44,7 @@ import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.nio.ByteBuffer
 
 
 class MainActivity : ComponentActivity() {
@@ -78,6 +85,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
 
     private lateinit var skeletonOverlay: SkeletonOverlay
+    private lateinit var guideOverlay: ExerciseGuideOverlay
+    private val setupController = ExerciseSetupController()
+    private val poseTemporalFilter = PoseTemporalFilter()
 
     private lateinit var statusText: TextView
 
@@ -101,6 +111,11 @@ class MainActivity : ComponentActivity() {
 
     private val pushUpExercise =
         PushUpExercise()
+    private val visualCoaching = VisualCoaching()
+    private var lastSquatReps = 0
+    private var lastPushUpReps = 0
+    private var pushUpRepStartMs = -1L
+    private var pushUpRepMinElbow = Double.POSITIVE_INFINITY
 
 
     private var lastExerciseUiUpdate =
@@ -123,11 +138,30 @@ class MainActivity : ComponentActivity() {
     // FPS COUNTER
     // =========================================================
 
-    private var poseImageWidth =
-        0
-
-    private var poseImageHeight =
-        0
+    private val frameGeometry = LinkedHashMap<Long, Pair<Int, Int>>()
+    private var lastFrameTimestamp = -1L
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var lastPoseUiMs = 0L
+    private val poseWatchdog = object : Runnable {
+        override fun run() {
+            if (::skeletonOverlay.isInitialized && lastPoseUiMs > 0 &&
+                SystemClock.elapsedRealtime() - lastPoseUiMs > 800) {
+                lastPoseUiMs = 0
+                synchronized(exerciseLock) {
+                    setupController.retry()
+                    visualCoaching.reset()
+                    squatExercise.onPoseLost(SystemClock.uptimeMillis())
+                    pushUpExercise.onPoseLost()
+                    pushUpRepStartMs = -1L
+                    pushUpRepMinElbow = Double.POSITIVE_INFINITY
+                }
+                skeletonOverlay.clear()
+                guideOverlay.show(currentProfile(),
+                    SetupDisplay(SetupStage.ALIGN, SetupHint.CAMERA_VIEW))
+            }
+            uiHandler.postDelayed(this, 300)
+        }
+    }
 
     private var poseFrameCount =
         0
@@ -187,10 +221,15 @@ class MainActivity : ComponentActivity() {
         )
 
         val requestedExercise = intent.getStringExtra(EXTRA_WORKOUT_EXERCISE)
-        if (requestedExercise == ExerciseType.SQUAT.name) {
+        if (requestedExercise == ExerciseType.SQUAT.name ||
+            requestedExercise == ExerciseType.PUSH_UP.name) {
             val sets = intent.getIntExtra(EXTRA_WORKOUT_SETS, 3).coerceIn(1, 20)
             val reps = intent.getIntExtra(EXTRA_WORKOUT_REPS, 10).coerceIn(1, 100)
-            workoutSession = WorkoutSessionManager(WorkoutExercise(ExerciseType.SQUAT, sets, reps))
+            val exercise = if (requestedExercise == ExerciseType.PUSH_UP.name)
+                ExerciseType.PUSH_UP else ExerciseType.SQUAT
+            selectedExercise = if (exercise == ExerciseType.PUSH_UP)
+                ExerciseMode.PUSH_UP else ExerciseMode.SQUAT
+            workoutSession = WorkoutSessionManager(WorkoutExercise(exercise, sets, reps))
             workoutSession!!.start(SystemClock.uptimeMillis())
         }
 
@@ -201,6 +240,12 @@ class MainActivity : ComponentActivity() {
 
         val root =
             FrameLayout(this)
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(0, bars.top, 0, bars.bottom)
+            insets
+        }
 
 
         // =====================================================
@@ -239,6 +284,13 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+
+        guideOverlay = ExerciseGuideOverlay(this)
+        root.addView(guideOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        guideOverlay.show(currentProfile(),
+            SetupDisplay(SetupStage.DEMO, SetupHint.CAMERA_VIEW))
 
 
         // =====================================================
@@ -304,6 +356,7 @@ class MainActivity : ComponentActivity() {
             statusText,
             statusParams
         )
+        statusText.visibility = View.GONE
 
 
         // =====================================================
@@ -411,6 +464,31 @@ class MainActivity : ComponentActivity() {
             selectorParams
         )
 
+        val retryButton = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_popup_sync)
+            contentDescription = "Retry camera alignment"
+            setOnClickListener {
+                synchronized(exerciseLock) {
+                    exerciseSession++
+                    setupController.retry()
+                    visualCoaching.reset()
+                    squatExercise.onPoseLost(SystemClock.uptimeMillis())
+                    pushUpExercise.onPoseLost()
+                }
+                skeletonOverlay.clear()
+                guideOverlay.show(currentProfile(),
+                    SetupDisplay(SetupStage.ALIGN, SetupHint.CAMERA_VIEW))
+            }
+        }
+        root.addView(retryButton, FrameLayout.LayoutParams(
+            (52 * resources.displayMetrics.density).toInt(),
+            (52 * resources.displayMetrics.density).toInt()
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = 20
+            rightMargin = 20
+        })
+
         if (workoutSession != null) selectorLayout.visibility = View.GONE
 
 
@@ -421,9 +499,8 @@ class MainActivity : ComponentActivity() {
         exerciseText =
             TextView(this).apply {
 
-                text =
-                    "SQUAT\n" +
-                            "Stand with your full body visible"
+                text = if (selectedExercise == ExerciseMode.SQUAT)
+                    "SQUAT   0 reps" else "PUSH-UP   0 reps"
 
 
                 setTextColor(
@@ -432,7 +509,7 @@ class MainActivity : ComponentActivity() {
 
 
                 textSize =
-                    18f
+                    16f
 
 
                 gravity =
@@ -495,6 +572,10 @@ class MainActivity : ComponentActivity() {
                 synchronized(exerciseLock) {
                     if (workoutSession?.state == WorkoutSessionState.SET_COMPLETE) {
                         squatExercise.resetSession()
+                        pushUpExercise.resetSession()
+                        pushUpRepStartMs = -1L
+                        pushUpRepMinElbow = Double.POSITIVE_INFINITY
+                        setupController.retry()
                         workoutSession!!.startNextSet(SystemClock.uptimeMillis())
                     }
                 }
@@ -516,10 +597,10 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        /*
-         * SQUAT is selected by default.
-         */
+        /* Show the selected exercise's guide before the first camera result. */
         skeletonOverlay.setGuidance(PostureGuidance())
+        guideOverlay.show(currentProfile(),
+            SetupDisplay(SetupStage.DEMO, SetupHint.CAMERA_VIEW))
         updateSelectorUi()
 
 
@@ -591,6 +672,14 @@ class MainActivity : ComponentActivity() {
             squatExercise.resetSession()
 
             pushUpExercise.resetSession()
+            lastSquatReps = 0
+            lastPushUpReps = 0
+            pushUpRepStartMs = -1L
+            pushUpRepMinElbow = Double.POSITIVE_INFINITY
+
+            setupController.reset()
+            visualCoaching.reset()
+            poseTemporalFilter.reset()
 
 
             selectedExercise =
@@ -603,6 +692,9 @@ class MainActivity : ComponentActivity() {
 
 
         skeletonOverlay.setGuidance(PostureGuidance())
+        skeletonOverlay.clear()
+        guideOverlay.show(currentProfile(),
+            SetupDisplay(SetupStage.DEMO, SetupHint.CAMERA_VIEW))
         updateSelectorUi()
 
 
@@ -617,14 +709,12 @@ class MainActivity : ComponentActivity() {
 
                 ExerciseMode.SQUAT ->
 
-                    "SQUAT\n" +
-                            "Stand with your full body visible"
+                    "SQUAT   0 reps"
 
 
                 ExerciseMode.PUSH_UP ->
 
-                    "PUSH-UP\n" +
-                            "Turn sideways and keep your body visible"
+                    "PUSH-UP   0 reps"
             }
 
 
@@ -632,6 +722,23 @@ class MainActivity : ComponentActivity() {
             TAG,
             "Exercise selected: $newExercise"
         )
+    }
+
+    private fun currentProfile(): ExerciseProfile = ExerciseProfile.forExercise(
+        if (selectedExercise == ExerciseMode.SQUAT) CoachingExercise.SQUAT else CoachingExercise.PUSH_UP
+    )
+
+    private fun detectedBodyScale(profile: ExerciseProfile,
+        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        frameWidth: Int, frameHeight: Int, side: Int?): Float {
+        val offset = side ?: return 1f
+        val shoulder = landmarks.getOrNull(11 + offset) ?: return 1f
+        val ankle = landmarks.getOrNull(27 + offset) ?: return 1f
+        val span = kotlin.math.hypot((ankle.x() - shoulder.x()) * frameWidth,
+            (ankle.y() - shoulder.y()) * frameHeight)
+        val reference = if (profile.exercise == CoachingExercise.SQUAT)
+            frameHeight * 0.60f else frameWidth * 0.62f
+        return if (reference > 0f) span / reference else 1f
     }
 
 
@@ -777,6 +884,7 @@ class MainActivity : ComponentActivity() {
 
                 statusText.text =
                     "MediaPipe model failed to load"
+                statusText.visibility = View.VISIBLE
             }
         }
     }
@@ -854,11 +962,20 @@ class MainActivity : ComponentActivity() {
                 cameraProvider.unbindAll()
 
 
+                val viewPort = previewView.viewPort
+                if (viewPort == null) {
+                    previewView.post { startCamera() }
+                    return@addListener
+                }
+                val useCases = UseCaseGroup.Builder()
+                    .setViewPort(viewPort)
+                    .addUseCase(preview)
+                    .addUseCase(imageAnalysis)
+                    .build()
                 cameraProvider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    imageAnalysis
+                    useCases
                 )
 
 
@@ -876,6 +993,8 @@ class MainActivity : ComponentActivity() {
                     "Unable to start camera",
                     Toast.LENGTH_LONG
                 ).show()
+                statusText.text = "Unable to start camera"
+                statusText.visibility = View.VISIBLE
             }
 
 
@@ -906,10 +1025,6 @@ class MainActivity : ComponentActivity() {
         }
 
 
-        val frameTime =
-            SystemClock.uptimeMillis()
-
-
         val rotationDegrees =
             imageProxy
                 .imageInfo
@@ -920,6 +1035,7 @@ class MainActivity : ComponentActivity() {
         // RGBA camera frame -> bitmap
         // -------------------------------------------------
 
+        val cropRect = android.graphics.Rect(imageProxy.cropRect)
         val bitmapBuffer =
             Bitmap.createBitmap(
                 imageProxy.width,
@@ -930,18 +1046,24 @@ class MainActivity : ComponentActivity() {
 
         try {
 
-            val buffer =
-                imageProxy
-                    .planes[0]
-                    .buffer
-
-
-            buffer.rewind()
-
-
-            bitmapBuffer.copyPixelsFromBuffer(
-                buffer
-            )
+            val plane = imageProxy.planes[0]
+            val source = plane.buffer.duplicate()
+            val packed = ByteBuffer.allocate(imageProxy.width * imageProxy.height * 4)
+            val row = ByteArray(imageProxy.width * 4)
+            for (y in 0 until imageProxy.height) {
+                if (plane.pixelStride == 4) {
+                    source.position(y * plane.rowStride)
+                    source.get(row, 0, row.size)
+                } else {
+                    for (x in 0 until imageProxy.width) {
+                        val pixel = y * plane.rowStride + x * plane.pixelStride
+                        for (channel in 0..3) row[x * 4 + channel] = source.get(pixel + channel)
+                    }
+                }
+                packed.put(row)
+            }
+            packed.rewind()
+            bitmapBuffer.copyPixelsFromBuffer(packed)
 
 
         } catch (e: Exception) {
@@ -975,24 +1097,18 @@ class MainActivity : ComponentActivity() {
             }
 
 
+        val croppedBitmap = Bitmap.createBitmap(bitmapBuffer, cropRect.left, cropRect.top,
+            cropRect.width(), cropRect.height())
         val rotatedBitmap =
             Bitmap.createBitmap(
-                bitmapBuffer,
+                croppedBitmap,
                 0,
                 0,
-                bitmapBuffer.width,
-                bitmapBuffer.height,
+                croppedBitmap.width,
+                croppedBitmap.height,
                 matrix,
                 true
             )
-
-
-        poseImageWidth =
-            rotatedBitmap.width
-
-
-        poseImageHeight =
-            rotatedBitmap.height
 
 
         // -------------------------------------------------
@@ -1009,6 +1125,13 @@ class MainActivity : ComponentActivity() {
         // Async inference
         // -------------------------------------------------
 
+        val frameTime = synchronized(frameGeometry) {
+            val timestamp = maxOf(SystemClock.uptimeMillis(), lastFrameTimestamp + 1)
+            lastFrameTimestamp = timestamp
+            frameGeometry[timestamp] = rotatedBitmap.width to rotatedBitmap.height
+            while (frameGeometry.size > 12) frameGeometry.remove(frameGeometry.keys.first())
+            timestamp
+        }
         try {
 
             landmarker.detectAsync(
@@ -1018,6 +1141,8 @@ class MainActivity : ComponentActivity() {
 
 
         } catch (e: Exception) {
+
+            synchronized(frameGeometry) { frameGeometry.remove(frameTime) }
 
             Log.e(
                 TAG,
@@ -1036,6 +1161,10 @@ class MainActivity : ComponentActivity() {
         result: PoseLandmarkerResult
     ) {
 
+        val frameSize = synchronized(frameGeometry) {
+            frameGeometry.remove(result.timestampMs())
+        } ?: return
+
         poseFrameCount++
 
 
@@ -1048,10 +1177,14 @@ class MainActivity : ComponentActivity() {
                     fpsWindowStart
 
 
-        val poseDetected =
-            result
-                .landmarks()
-                .isNotEmpty()
+        val filteredPose = result.landmarks().firstOrNull()?.let { raw ->
+            synchronized(exerciseLock) {
+                poseTemporalFilter.process(PoseObservation.fromMediaPipe(
+                    result.timestampMs(), frameSize.first, frameSize.second, raw))
+            }
+        }
+        val filteredLandmarks = filteredPose?.toMediaPipe()
+        val poseDetected = filteredLandmarks != null
 
 
         /*
@@ -1078,19 +1211,32 @@ class MainActivity : ComponentActivity() {
         // =====================================================
 
         if (poseDetected) {
-            val landmarks = result.landmarks()[0]
-            val frameWidth = poseImageWidth
-            val frameHeight = poseImageHeight
+            val landmarks = filteredLandmarks!!
+            val frameWidth = frameSize.first
+            val frameHeight = frameSize.second
             val guidance: PostureGuidance
+            val setup: SetupDisplay
+            val profile: ExerciseProfile
 
             synchronized(exerciseLock) {
                 activeExercise = selectedExercise
                 activeSession = exerciseSession
-                guidance = when (activeExercise) {
+                profile = currentProfile()
+                setup = setupController.update(profile, landmarks, frameWidth, frameHeight,
+                    result.timestampMs())
+                guidance = if (!setup.canScore) {
+                    squatExercise.onPoseLost(result.timestampMs())
+                    pushUpExercise.onPoseLost()
+                    pushUpRepStartMs = -1L
+                    pushUpRepMinElbow = Double.POSITIVE_INFINITY
+                    visualCoaching.reset()
+                    PostureGuidance()
+                } else when (activeExercise) {
                     ExerciseMode.SQUAT -> {
                         squatResult = squatExercise.analyze(
                             landmarks, frameWidth, frameHeight, result.timestampMs()
                         )
+                        lastSquatReps = squatResult!!.repCount
                         workoutSession?.let { session ->
                             val measurement = squatResult!!
                             session.recordSample(result.timestampMs(),
@@ -1100,11 +1246,32 @@ class MainActivity : ComponentActivity() {
                                 session.completedRep(result.timestampMs(), it)
                             }
                         }
-                        PostureGuidance()
+                        visualCoaching.squat(landmarks, frameWidth, frameHeight,
+                            squatResult!!, result.timestampMs())
                     }
                     ExerciseMode.PUSH_UP -> {
                         pushUpResult = pushUpExercise.analyze(landmarks)
-                        pushUpAnalyzer.analyze(landmarks, frameWidth, frameHeight).guidance
+                        val measurement = pushUpResult!!
+                        if (measurement.phase == PushUpPhase.DESCENDING &&
+                            pushUpRepStartMs < 0) pushUpRepStartMs = result.timestampMs()
+                        if (pushUpRepStartMs >= 0 && measurement.averageElbowAngle.isFinite())
+                            pushUpRepMinElbow = minOf(pushUpRepMinElbow,
+                                measurement.averageElbowAngle)
+                        if (measurement.repCount > lastPushUpReps) {
+                            workoutSession?.let { session ->
+                                session.completedRep(result.timestampMs(), PushUpRepMetrics(
+                                    if (pushUpRepStartMs >= 0) pushUpRepStartMs else result.timestampMs(),
+                                    result.timestampMs(),
+                                    pushUpRepMinElbow.takeIf { it.isFinite() }
+                                        ?: measurement.averageElbowAngle))
+                            }
+                            pushUpRepStartMs = -1L
+                            pushUpRepMinElbow = Double.POSITIVE_INFINITY
+                        }
+                        lastPushUpReps = pushUpResult!!.repCount
+                        visualCoaching.pushUp(landmarks,
+                            pushUpAnalyzer.analyze(landmarks, frameWidth, frameHeight),
+                            pushUpResult!!, result.timestampMs())
                     }
                 }
             }
@@ -1112,22 +1279,38 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 // Reject queued results from a previous session, including A -> B -> A switches.
                 if (exerciseSession == activeSession) {
+                    lastPoseUiMs = SystemClock.elapsedRealtime()
                     skeletonOverlay.setLandmarks(landmarks, frameWidth, frameHeight)
                     // NOT_READY supplies empty guidance without hiding partial landmarks.
                     skeletonOverlay.setGuidance(guidance)
+                    guideOverlay.show(profile, setup,
+                        detectedBodyScale(profile, landmarks, frameWidth, frameHeight,
+                            setup.selectedSide))
                 }
             }
         } else {
+            val setup: SetupDisplay
+            val profile: ExerciseProfile
             synchronized(exerciseLock) {
                 activeExercise = selectedExercise
                 activeSession = exerciseSession
+                profile = currentProfile()
+                setup = setupController.update(profile, null, frameSize.first, frameSize.second,
+                    result.timestampMs())
+                visualCoaching.reset()
+                pushUpRepStartMs = -1L
+                pushUpRepMinElbow = Double.POSITIVE_INFINITY
                 when (activeExercise) {
                     ExerciseMode.SQUAT -> squatExercise.onPoseLost(result.timestampMs())
                     ExerciseMode.PUSH_UP -> pushUpExercise.onPoseLost()
                 }
             }
             runOnUiThread {
-                if (exerciseSession == activeSession) skeletonOverlay.clear()
+                if (exerciseSession == activeSession) {
+                    lastPoseUiMs = SystemClock.elapsedRealtime()
+                    skeletonOverlay.clear()
+                    guideOverlay.show(profile, setup)
+                }
             }
         }
 
@@ -1145,157 +1328,10 @@ class MainActivity : ComponentActivity() {
                 currentTime
 
 
-            val exerciseDisplay: String
-
-            val exerciseColor: Int
-
-
-            when (activeExercise) {
-
-                // =============================================
-                // SQUAT UI
-                // =============================================
-
-                ExerciseMode.SQUAT -> {
-
-                    exerciseDisplay =
-
-                        if (
-                            squatResult ==
-                            null
-                        ) {
-
-                            "SQUAT  |  Phase: NOT_READY\nNo pose detected"
-
-
-                        } else if (
-                            !squatResult!!.bodyVisible
-                        ) {
-
-                            "SQUAT  |  Phase: NOT_READY\n" +
-                                    squatResult!!.feedback
-
-
-                        } else {
-
-                            String.format(
-                                Locale.US,
-
-                                "SQUAT  |  Reps: %d\n" +
-                                        "Phase: %s  |  Side: %s\n" +
-                                        "Hip: %.2f (raw %.2f)  |  Flex: %.0f°\n" +
-                                        "Velocity: %.2f/s  |  Baseline: %.2f\n" +
-                                        "%s",
-
-                                squatResult!!.repCount,
-
-                                squatResult!!.phase.name,
-
-                                squatResult!!.selectedSide,
-                                squatResult!!.smoothedHipSignal,
-                                squatResult!!.rawHipSignal,
-                                squatResult!!.kneeFlexion,
-                                squatResult!!.movementVelocity,
-                                squatResult!!.standingBaseline ?: Double.NaN,
-
-                                squatResult!!.feedback
-                            )
-                        }
-
-
-                    exerciseColor =
-
-                        if (
-                            squatResult !=
-                            null &&
-                            squatResult!!.bodyVisible &&
-                            squatResult!!.phase != SquatExercisePhase.NOT_READY
-                        ) {
-
-                            Color.rgb(
-                                120,
-                                255,
-                                120
-                            )
-
-                        } else {
-
-                            Color.WHITE
-                        }
-                }
-
-
-                // =============================================
-                // PUSH-UP UI
-                // =============================================
-
-                ExerciseMode.PUSH_UP -> {
-
-                    exerciseDisplay =
-
-                        if (
-                            pushUpResult ==
-                            null
-                        ) {
-
-                            "PUSH-UP\nNo pose detected"
-
-
-                        } else if (
-                            !pushUpResult!!.bodyVisible
-                        ) {
-
-                            "PUSH-UP\n" +
-                                    pushUpResult!!.feedback
-
-
-                        } else {
-
-                            String.format(
-                                Locale.US,
-
-                                "PUSH-UP  |  Reps: %d\n" +
-                                        "Phase: %s\n" +
-                                        "Elbow: %.0f°\n" +
-                                        "L/R Difference: %.0f°\n" +
-                                        "%s",
-
-                                pushUpResult!!.repCount,
-
-                                pushUpResult!!.phase.name,
-
-                                pushUpResult!!.averageElbowAngle,
-
-                                pushUpResult!!.elbowDifference,
-
-                                pushUpResult!!.feedback
-                            )
-                        }
-
-
-                    exerciseColor =
-
-                        if (
-                            pushUpResult !=
-                            null &&
-                            pushUpResult!!.bodyVisible &&
-                            pushUpResult!!.postureGood
-                        ) {
-
-                            Color.rgb(
-                                120,
-                                255,
-                                120
-                            )
-
-                        } else {
-
-                            Color.WHITE
-                        }
-                }
+            val compactDisplay = when (activeExercise) {
+                ExerciseMode.SQUAT -> "SQUAT   $lastSquatReps reps"
+                ExerciseMode.PUSH_UP -> "PUSH-UP   $lastPushUpReps reps"
             }
-
-
             runOnUiThread {
 
                 /*
@@ -1308,21 +1344,15 @@ class MainActivity : ComponentActivity() {
 
                     val session = workoutSession
                     if (session == null) {
-                        exerciseText.text = exerciseDisplay
+                        exerciseText.text = compactDisplay
                     } else {
                         synchronized(exerciseLock) {
                             exerciseText.text = when (session.state) {
-                                WorkoutSessionState.ACTIVE_SET -> {
-                                    val targetReps = intent.getIntExtra(EXTRA_WORKOUT_REPS, 10)
-                                    val filled = (session.currentRep * 10 / targetReps).coerceIn(0, 10)
-                                    "SQUAT\nSet ${session.currentSet} / ${intent.getIntExtra(EXTRA_WORKOUT_SETS, 3)}" +
-                                    "    Rep ${session.currentRep} / $targetReps\n" +
-                                    "Phase: ${squatResult?.phase ?: SquatExercisePhase.NOT_READY}\n" +
-                                    "${"█".repeat(filled)}${"░".repeat(10 - filled)}"
-                                }
-                                WorkoutSessionState.SET_COMPLETE ->
-                                    "SET ${session.currentSet} COMPLETE\n" +
-                                    "Tap START NEXT SET when ready"
+                                WorkoutSessionState.ACTIVE_SET ->
+                                    "${if (activeExercise == ExerciseMode.SQUAT) "SQUAT" else "PUSH-UP"}   " +
+                                        "Set ${session.currentSet}/${intent.getIntExtra(EXTRA_WORKOUT_SETS, 3)}   " +
+                                        "Rep ${session.currentRep}/${intent.getIntExtra(EXTRA_WORKOUT_REPS, 10)}"
+                                WorkoutSessionState.SET_COMPLETE -> "SET ${session.currentSet} COMPLETE"
                                 WorkoutSessionState.WORKOUT_COMPLETE -> "WORKOUT COMPLETE"
                                 WorkoutSessionState.NOT_STARTED -> "Preparing workout"
                             }
@@ -1338,9 +1368,7 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                    exerciseText.setTextColor(
-                        exerciseColor
-                    )
+                    exerciseText.setTextColor(Color.WHITE)
                 }
             }
         }
@@ -1354,9 +1382,7 @@ class MainActivity : ComponentActivity() {
 
             if (poseDetected) {
 
-                result
-                    .landmarks()[0]
-                    .size
+                filteredLandmarks!!.size
 
             } else {
 
@@ -1506,6 +1532,31 @@ class MainActivity : ComponentActivity() {
     // =========================================================
     // CLEANUP
     // =========================================================
+
+    override fun onStart() {
+        super.onStart()
+        uiHandler.postDelayed(poseWatchdog, 300)
+    }
+
+    override fun onStop() {
+        uiHandler.removeCallbacks(poseWatchdog)
+        lastPoseUiMs = 0
+        synchronized(exerciseLock) {
+            exerciseSession++
+            setupController.reset()
+            visualCoaching.reset()
+            poseTemporalFilter.reset()
+            squatExercise.onPoseLost(SystemClock.uptimeMillis())
+            pushUpExercise.onPoseLost()
+            pushUpRepStartMs = -1L
+            pushUpRepMinElbow = Double.POSITIVE_INFINITY
+        }
+        synchronized(frameGeometry) { frameGeometry.clear() }
+        if (::skeletonOverlay.isInitialized) skeletonOverlay.clear()
+        if (::guideOverlay.isInitialized) guideOverlay.show(currentProfile(),
+            SetupDisplay(SetupStage.DEMO, SetupHint.CAMERA_VIEW))
+        super.onStop()
+    }
 
     override fun onDestroy() {
 

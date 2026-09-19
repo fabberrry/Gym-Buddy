@@ -6,7 +6,9 @@ data class WorkoutExercise(val exerciseType: ExerciseType, val sets: Int, val re
 data class WorkoutRoutine(val name: String, val exercises: List<WorkoutExercise>)
 
 object DefaultRoutines {
-    val today = WorkoutRoutine("Today's Workout", listOf(WorkoutExercise(ExerciseType.SQUAT, 3, 10)))
+    val today = WorkoutRoutine("Today's Workout", listOf(
+        WorkoutExercise(ExerciseType.SQUAT, 3, 10),
+        WorkoutExercise(ExerciseType.PUSH_UP, 3, 10)))
 }
 
 sealed interface ExerciseRepMetrics
@@ -18,6 +20,14 @@ data class SquatRepMetrics(
     val maxTorsoLean: Double? = null,
     val descentDurationSeconds: Double?,
     val ascentDurationSeconds: Double?
+) : ExerciseRepMetrics {
+    val durationSeconds: Double get() = (endTimestamp - startTimestamp) / 1000.0
+}
+
+data class PushUpRepMetrics(
+    val startTimestamp: Long,
+    val endTimestamp: Long,
+    val minimumElbowAngle: Double
 ) : ExerciseRepMetrics {
     val durationSeconds: Double get() = (endTimestamp - startTimestamp) / 1000.0
 }
