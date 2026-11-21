@@ -1400,12 +1400,17 @@ class MainActivity : ComponentActivity() {
             1000
         ) {
 
+
             val fps =
                 poseFrameCount *
                         1000f /
                         elapsed
 
-
+Log.i(
+    "PosePerformance",
+    "FPS=${"%.2f".format(Locale.US, fps)}, " +
+    "Latency=${latency}ms"
+)
             poseFrameCount =
                 0
 

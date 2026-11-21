@@ -60,8 +60,10 @@ class ExerciseGuideOverlay(context: Context) : View(context) {
         val cx = w * 0.5f
         val cy = h * 0.53f
         val span = minOf(w * 0.62f, h * 0.56f) * personScale
-        val progress = if (display.stage == SetupStage.DEMO)
-            (sin(android.os.SystemClock.uptimeMillis() / 380.0) * 0.5 + 0.5).toFloat() else 0f
+        val demonstrate = display.stage == SetupStage.DEMO ||
+            display.hint == SetupHint.CAMERA_VIEW || display.hint == SetupHint.BODY_NOT_VISIBLE
+        val progress = if (demonstrate)
+            (sin(android.os.SystemClock.uptimeMillis() / 800.0) * 0.5 + 0.5).toFloat() else 0f
         val good = display.stage == SetupStage.COUNTDOWN || display.hint == SetupHint.READY
         line.color = if (good) 0xcc6fe0b5.toInt() else 0xbb6fe0ff.toInt()
         thin.color = line.color
@@ -69,12 +71,13 @@ class ExerciseGuideOverlay(context: Context) : View(context) {
 
         val cameraY = if (profile.exercise == CoachingExercise.SQUAT)
             cy - span * 0.02f else cy
-        drawCamera(canvas, w * 0.13f, cameraY)
-        canvas.drawLine(w * 0.18f, cameraY, cx, cameraY, sightLine)
+        // The preview is already the phone's point of view. A camera icon beside
+        // the person incorrectly suggests that they should face the lens.
         val floorY = if (profile.exercise == CoachingExercise.SQUAT) cy + span * 0.73f
             else cy + span * 0.36f
         canvas.drawLine(w * 0.12f, floorY, w * 0.88f, floorY, thin)
         drawGhost(canvas, cx, cy, span, progress)
+        drawInstructions(canvas, w, h, demonstrate, progress)
         if (display.stage != SetupStage.DEMO) {
             val radius = span * .79f
             val oldWidth = thin.strokeWidth
@@ -117,7 +120,47 @@ class ExerciseGuideOverlay(context: Context) : View(context) {
             canvas.drawCircle(x, y, 53f * density, fill)
             canvas.drawText(display.countdown.toString(), x, y + 28f * density, number)
         }
-        if (display.stage == SetupStage.DEMO) postInvalidateDelayed(50)
+        if (demonstrate) postInvalidateDelayed(33)
+    }
+
+    private fun drawInstructions(canvas: Canvas, w: Float, h: Float, demo: Boolean, move: Float) {
+        val card = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xee101b29.toInt() }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            textSize = minOf(16f * density, w / 25f)
+        }
+        val top = h * .13f
+        val row = text.textSize * 1.6f
+        canvas.drawRoundRect(w * .035f, top, w * .965f, top + row * 4.6f,
+            14f * density, 14f * density, card)
+        text.isFakeBoldText = true
+        canvas.drawText("SIDE VIEW • Either side is OK", w / 2, top + row, text)
+        text.isFakeBoldText = false
+        canvas.drawText("Turn 90°: shoulder and hip toward phone", w / 2, top + row * 2, text)
+        val placement = if (profile.exercise == CoachingExercise.SQUAT)
+            "Prop phone at hip height • Step back" else "Prop phone low • Show your whole body"
+        canvas.drawText(placement, w / 2, top + row * 3, text)
+        canvas.drawText("Keep head and both feet inside the picture", w / 2, top + row * 4, text)
+        val message = when {
+            display.stage == SetupStage.COUNTDOWN -> "Position found • Hold still"
+            display.hint == SetupHint.TOO_CLOSE -> "Step farther back"
+            display.hint == SetupHint.TOO_FAR -> "Move a little closer"
+            display.hint == SetupHint.MOVE_LEFT -> "Move left in the picture"
+            display.hint == SetupHint.MOVE_RIGHT -> "Move right in the picture"
+            display.hint == SetupHint.TURN_SIDEWAYS -> "Turn sideways • Face left or right"
+            demo && profile.exercise == CoachingExercise.SQUAT ->
+                if (move > .55f) "DEMO: Sit hips back • Bend your knees" else "DEMO: Stand tall • Face to the side →"
+            demo -> "DEMO: Side view • Lower and push up"
+            else -> "Match the side view • Hold your start position"
+        }
+        val bottom = h * .82f
+        canvas.drawRoundRect(w * .035f, bottom, w * .965f, bottom + row * 2.5f,
+            14f * density, 14f * density, card)
+        text.color = 0xff6fe0b5.toInt()
+        canvas.drawText(message, w / 2, bottom + row, text)
+        text.color = Color.WHITE
+        canvas.drawText("The model shows the angle, not your exact size", w / 2, bottom + row * 2, text)
     }
 
     private fun drawCamera(canvas: Canvas, x: Float, y: Float) {
@@ -129,6 +172,10 @@ class ExerciseGuideOverlay(context: Context) : View(context) {
     }
 
     private fun drawGhost(canvas: Canvas, cx: Float, cy: Float, span: Float, move: Float) {
+        if (profile.exercise == CoachingExercise.SQUAT) {
+            drawSquatPerson(canvas, cx, cy, span, move)
+            return
+        }
         // Coordinates are a simple side-view illustration; the user aligns the
         // start position and framing, not individual pixel-perfect joints.
         val joints = if (profile.exercise == CoachingExercise.SQUAT) {
@@ -157,6 +204,63 @@ class ExerciseGuideOverlay(context: Context) : View(context) {
             joints[b][0], joints[b][1], line)
         for (joint in joints) canvas.drawCircle(joint[0], joint[1], 6f * density, fill)
         canvas.drawCircle(joints[0][0], joints[0][1] - 19f * density, 16f * density, line)
+    }
+
+    /** Filled side-profile athlete with a visible nose, clothing and planted feet. */
+    private fun drawSquatPerson(canvas: Canvas, cx: Float, cy: Float, span: Float, bend: Float) {
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.scale(span, span)
+        val skin = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xffedbd98.toInt(); strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+        }
+        val shirt = Paint(skin).apply { color = 0xff6fe0b5.toInt() }
+        val pants = Paint(skin).apply { color = 0xff527ab5.toInt() }
+        val shoe = Paint(skin).apply { color = 0xffedf3ff.toInt() }
+        val hipX = -.02f - .25f * bend
+        val hipY = .03f + .34f * bend
+        val shoulderX = -.04f + .10f * bend
+        val shoulderY = -.43f + .36f * bend
+        val kneeX = .04f + .20f * bend
+        val kneeY = .37f + .04f * bend
+        fun limb(x1: Float, y1: Float, x2: Float, y2: Float, width: Float, paint: Paint) {
+            paint.strokeWidth = width
+            canvas.drawLine(x1, y1, x2, y2, paint)
+        }
+        // Far leg is offset and darker so the profile reads as a human body.
+        val far = Paint(pants).apply { color = 0xff354e78.toInt() }
+        limb(hipX - .04f, hipY, kneeX - .09f, kneeY, .13f, far)
+        limb(kneeX - .09f, kneeY, -.06f, .68f, .09f, far)
+        limb(-.09f, .71f, .06f, .71f, .065f, shoe)
+        limb(hipX, hipY, kneeX, kneeY, .16f, pants)
+        limb(kneeX, kneeY, .04f, .68f, .105f, pants)
+        limb(.02f, .71f, .18f, .71f, .07f, shoe)
+        val torso = Path().apply {
+            moveTo(shoulderX - .105f, shoulderY)
+            quadTo(shoulderX + .04f, shoulderY - .08f, shoulderX + .115f, shoulderY + .02f)
+            lineTo(hipX + .11f, hipY + .025f)
+            quadTo(hipX, hipY + .09f, hipX - .11f, hipY + .02f)
+            close()
+        }
+        canvas.drawPath(torso, shirt)
+        limb(shoulderX + .01f, shoulderY - .02f, shoulderX + .01f, shoulderY - .12f, .07f, skin)
+        canvas.drawOval(shoulderX - .08f, shoulderY - .29f,
+            shoulderX + .09f, shoulderY - .09f, skin)
+        val nose = Path().apply {
+            moveTo(shoulderX + .065f, shoulderY - .22f)
+            lineTo(shoulderX + .13f, shoulderY - .17f)
+            lineTo(shoulderX + .06f, shoulderY - .15f); close()
+        }
+        canvas.drawPath(nose, skin)
+        val hair = Paint(skin).apply { color = 0xff263345.toInt() }
+        canvas.drawArc(shoulderX - .085f, shoulderY - .30f,
+            shoulderX + .085f, shoulderY - .12f, 160f, 210f, true, hair)
+        canvas.drawCircle(shoulderX + .065f, shoulderY - .215f, .011f, hair)
+        val elbowX = shoulderX + .15f + .10f * bend
+        val elbowY = shoulderY + .20f - .13f * bend
+        limb(shoulderX + .035f, shoulderY + .025f, elbowX, elbowY, .078f, skin)
+        limb(elbowX, elbowY, elbowX + .17f, elbowY - .055f, .065f, skin)
+        canvas.restore()
     }
 
     private fun point(x: Float, y: Float) = floatArrayOf(x, y)
